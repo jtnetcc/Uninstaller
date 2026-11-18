@@ -35,7 +35,7 @@ jobs:
       - name: 构建
         run: swift build -c release
 
-      - name: 自测（34 项，不触碰真实应用）
+      - name: 自测（35 项，不触碰真实应用）
         run: |
           set -euo pipefail
           BIN="$(swift build -c release --show-bin-path | tail -1)/AppUninstaller"

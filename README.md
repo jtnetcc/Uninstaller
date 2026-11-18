@@ -104,7 +104,7 @@ swift build --disable-sandbox -c release
 ./.build/release/AppUninstaller --selftest --privileged
 ```
 
-- 基础模式 34 项断言；带 `--privileged` 共 42 项
+- 基础模式 35 项断言；带 `--privileged` 共 43 项
 - 测试数据全部位于 `~/Applications` 与 `/Library/Application Support/AUPrivTest-*`，结束时自动清理
 - 退出码非 0 表示失败
 

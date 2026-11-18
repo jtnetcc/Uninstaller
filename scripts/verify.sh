@@ -10,7 +10,7 @@ APP="$ROOT/dist/App Uninstaller.app"
 echo "== 1. 构建 =="
 swift build --package-path "$ROOT" --disable-sandbox -c release
 
-echo "== 2. 自测（34 项） =="
+echo "== 2. 自测（35 项） =="
 "$ROOT/.build/release/AppUninstaller" --selftest
 
 echo "== 3. 打包 =="

@@ -140,13 +140,24 @@ enum ProtectionPolicy {
 
     /// 判断移除该应用是否需要 root：
     /// 删除 .app 需要对包内各级目录有写权限，仅看父目录不够。
+    ///
+    /// 注意：路径可能**尚未落盘**（CI 环境没有 ~/Applications、或扫描期路径已消失），
+    /// 此时 `access(parent, W_OK) != 0` 并不代表"权限不足"，而只是"目录不存在"。
+    /// 需要回溯到最近存在的祖先目录来判断真实写权限，否则会误判为 adminRequired。
     private static func requiresAdminPrivileges(_ path: String) -> Bool {
-        let parent = (path as NSString).deletingLastPathComponent
-        // 父目录不可写 → 连目录项都删不掉
-        if access(parent, W_OK) != 0 { return true }
-        // 包内 Contents 不可写 → rm -rf 无法递归删除
+        let fm = FileManager.default
+        var probe = (path as NSString).deletingLastPathComponent
+
+        while !fm.fileExists(atPath: probe), probe != "/" {
+            let parent = (probe as NSString).deletingLastPathComponent
+            if parent == probe { break }
+            probe = parent
+        }
+        if access(probe, W_OK) != 0 { return true }
+
+        // 包已存在时：Contents 不可写 → 必须提权
         let contents = path + "/Contents"
-        if access(contents, F_OK) == 0, access(contents, W_OK) != 0 { return true }
+        if fm.fileExists(atPath: contents), access(contents, W_OK) != 0 { return true }
         return false
     }
 

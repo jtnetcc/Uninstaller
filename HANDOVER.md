@@ -26,14 +26,14 @@ cd AppUninstaller
 # 1) 构建 + 打包（约 15 秒）
 ./build.sh
 
-# 2) 无头自测（不碰真实应用，34 项断言）
+# 2) 无头自测（不碰真实应用，35 项断言）
 ./.build/release/AppUninstaller --selftest
 
 # 3) 运行
 open "dist/App Uninstaller.app"
 ```
 
-全部通过（`全部通过 (34 项)`）即表示环境正常，可以开始改代码。
+全部通过（`全部通过 (35 项)`）即表示环境正常，可以开始改代码。
 
 > 若 `./build.sh` 报 `sandbox-exec: sandbox_apply: Operation not permitted`，说明终端处于受限环境，脚本已内置 `--disable-sandbox`，一般不会再报；若仍有问题见 §7.1。
 
@@ -75,7 +75,7 @@ macOS 自带的「移到废纸篓」只删应用包本体，留下大量配置�
 | 维度 | 状态 |
 |---|---|
 | 核心功能 | 完成并实测（本机 85 个应用 / 15.45 GB 扫描正常） |
-| 自动化测试 | `--selftest` 34 项；加 `--privileged` 42 项（含真实 root 提权删除验证） |
+| 自动化测试 | `--selftest` 35 项；加 `--privileged` 43 项（含真实 root 提权删除验证） |
 | 签名 | ad-hoc（本机可用，跨机分发需自行签名/公证，见 §5.3） |
 | 架构 | arm64 only（Universal 构建方法见 §4.4） |
 | 版本控制 | **尚未初始化 git**，见 §8.6 |
@@ -270,7 +270,7 @@ swift build --disable-sandbox -c release
 ./.build/release/AppUninstaller --selftest
 ```
 
-期望结尾：`全部通过 (34 项)`，退出码 0。
+期望结尾：`全部通过 (35 项)`，退出码 0。
 
 **Step 5 · 打包并运行**
 
@@ -420,7 +420,7 @@ BIN="$ROOT/.build/out/Products/Release/AppUninstaller"
 
 - [ ] `xcode-select -p` 指向完整 Xcode
 - [ ] `swift build --disable-sandbox -c release` 成功
-- [ ] `./.build/release/AppUninstaller --selftest` → `全部通过 (34 项)`
+- [ ] `./.build/release/AppUninstaller --selftest` → `全部通过 (35 项)`
 - [ ] `./build.sh` 生成 `dist/App Uninstaller.app`
 - [ ] 启动后能列出应用，占用数字与 Finder「显示简介」量级一致
 - [ ] 选中一个系统内置应用，详情显示「只读卷」且按钮为「移除…」
@@ -670,8 +670,8 @@ System Integrity Protection status: enabled.
 ### 6.10 自测框架
 
 ```bash
-./.build/release/AppUninstaller --selftest              # 34 项
-./.build/release/AppUninstaller --selftest --privileged  # 42 项（含真实 root 删除）
+./.build/release/AppUninstaller --selftest              # 35 项
+./.build/release/AppUninstaller --selftest --privileged  # 43 项（含真实 root 删除）
 ```
 
 | 分组 | 覆盖 |
@@ -968,7 +968,7 @@ echo "全部检查通过"
 | # | 事项 | 确认人 | 日期 |
 |---|---|---|---|
 | 1 | 能独立完成 `./build.sh` 并启动 | | |
-| 2 | 能跑通 `--selftest`（34 项） | | |
+| 2 | 能跑通 `--selftest`（35 项） | | |
 | 3 | 读过 §8.1 安全红线并理解 | | |
 | 4 | 知道改 bundleID 要同步 5 处（§4.3） | | |
 | 5 | 知道系统内置应用不可物理删除的原因（§6.9） | | |

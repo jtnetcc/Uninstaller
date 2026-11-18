@@ -37,6 +37,11 @@ enum SelfTest {
         check(ProtectionPolicy.evaluate(path: appsDir.appendingPathComponent("Foo.app").path,
                                         bundleID: "com.vendor.foo", name: "Foo").scope == .userManaged,
               "~/Applications 下第三方应用应 userManaged")
+        // 回归：路径/父目录尚不存在时（CI 环境常见）不得误判为需要管理员权限
+        check(ProtectionPolicy.evaluate(
+                path: home.appendingPathComponent("Applications/__au_no_such_dir__/Ghost.app").path,
+                bundleID: "com.vendor.ghost", name: "Ghost").scope == .userManaged,
+              "祖先目录不存在时不应误判为需要管理员授权")
         check(ProtectionPolicy.isForbiddenResidualPath(home.appendingPathComponent("Library").path),
               "~/Library 根目录必须禁止")
         check(!ProtectionPolicy.isForbiddenResidualPath(
