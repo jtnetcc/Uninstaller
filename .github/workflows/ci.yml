@@ -1,0 +1,59 @@
+name: CI
+
+# 日常质量门禁：不发布，只验证「能编译 + 自测通过 + 产物可组装」
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: 构建与自测
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: 构建
+        run: swift build -c release
+
+      - name: 自测（34 项，不触碰真实应用）
+        run: |
+          set -euo pipefail
+          BIN="$(swift build -c release --show-bin-path | tail -1)/AppUninstaller"
+          "$BIN" --selftest
+
+      - name: 组装 .app 并校验
+        run: |
+          set -euo pipefail
+          ./build.sh --no-build
+          APP="dist/App Uninstaller.app"
+          test -x "$APP/Contents/MacOS/AppUninstaller"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature"
+          echo "产物校验通过"
+
+      - name: 上传构建产物（保留 7 天，便于排查）
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-uninstaller-ci-${{ github.sha }}
+          path: dist/App Uninstaller.app
+          retention-days: 7
+          if-no-files-found: error

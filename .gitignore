@@ -1,0 +1,14 @@
+# 构建产物
+.build/
+dist/
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+
+# 临时文件
+*.swp
+*~

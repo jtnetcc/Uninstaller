@@ -1,0 +1,183 @@
+name: Release
+
+# 触发条件
+#   1) 推送语义化版本 tag（v1.2.3 或 v1.2.3-beta.1）→ 自动构建并发布 Release
+#   2) 手动触发（Actions 页面 Run workflow），需填写版本号
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不含 v，例如 1.0.1）'
+        required: true
+        type: string
+      prerelease:
+        description: '标记为预发布（Pre-release）'
+        required: false
+        type: boolean
+        default: false
+
+# 发布 Release 需要写权限；其余权限一律不给
+permissions:
+  contents: write
+
+# 同一 tag 不并发，避免重复上传 asset
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: 构建并发布
+    # macOS 14 为 Apple Silicon 运行器；universal 构建需其 SDK 交叉编译 x86_64
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 解析版本号
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            VERSION="$INPUT_VERSION"
+            PRERELEASE="${INPUT_PRERELEASE:-false}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            PRERELEASE=false
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::版本号格式非法: $VERSION（应为 MAJOR.MINOR.PATCH）"
+            exit 1
+          fi
+          # 带后缀的版本（如 1.2.0-beta.1）默认视为预发布
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; fi
+          echo "version=$VERSION"      >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"         >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "版本: $VERSION / 预发布: $PRERELEASE"
+
+      - name: 环境信息
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: 注入版本号到 Info.plist
+        run: ./scripts/set-version.sh "${{ steps.version.outputs.version }}" "${GITHUB_RUN_NUMBER}"
+
+      - name: 构建（universal: arm64 + x86_64）
+        run: swift build -c release --arch arm64 --arch x86_64
+
+      - name: 自测（34 项）
+        run: |
+          set -euo pipefail
+          BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path | tail -1)/AppUninstaller"
+          echo "二进制: $BIN"
+          "$BIN" --selftest
+
+      - name: 组装 .app
+        run: ./build.sh --universal --no-build
+
+      - name: 校验签名与架构
+        run: |
+          set -euo pipefail
+          APP="dist/App Uninstaller.app"
+          codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature"
+          file "$APP/Contents/MacOS/AppUninstaller"
+          plutil -p "$APP/Contents/Info.plist" | grep -E "CFBundleShortVersionString|CFBundleVersion|LSMinimumSystemVersion"
+
+      - name: 打包 zip / dmg / 校验和
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          cd dist
+          ZIP="AppUninstaller-${VERSION}-universal.zip"
+          DMG="AppUninstaller-${VERSION}-universal.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "App Uninstaller.app" "$ZIP"
+          hdiutil create -volname "App Uninstaller" -srcfolder "App Uninstaller.app" \
+            -ov -format UDZO "$DMG" >/dev/null
+          shasum -a 256 "$ZIP" "$DMG" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -lh "$ZIP" "$DMG"
+          {
+            echo "zip=$ZIP"
+            echo "dmg=$DMG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 生成 Release Notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          PREV_TAG="$(git describe --tags --abbrev=0 --exclude='*' HEAD^ 2>/dev/null || true)"
+          {
+            echo "## App Uninstaller $VERSION"
+            echo ""
+            echo "### 安装"
+            echo ""
+            echo "1. 下载 \`AppUninstaller-${VERSION}-universal.zip\`"
+            echo "2. 解压得到 \`App Uninstaller.app\`，拖入「应用程序」"
+            echo "3. 首次打开若提示「无法验证开发者」（本构建采用 ad-hoc 签名，未公证）："
+            echo "   - 右键点按应用 → 打开，或"
+            echo "   - 终端执行：\`xattr -dr com.apple.quarantine \"/Applications/App Uninstaller.app\"\`"
+            echo ""
+            echo "### 产物"
+            echo ""
+            echo "| 文件 | 说明 |"
+            echo "|---|---|"
+            echo "| \`${VERSION}-universal.zip\` | 应用包（保留 bundle 结构，推荐） |"
+            echo "| \`${VERSION}-universal.dmg\` | 磁盘映像，便于分发 |"
+            echo "| \`SHA256SUMS.txt\` | 完整性校验 |"
+            echo ""
+            echo "### 系统要求"
+            echo ""
+            echo "- macOS 13.0 (Ventura) 及以上，Universal（arm64 + x86_64）"
+            echo "- 需要管理员密码才能卸载 /Applications 下的应用或系统级残留"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "### 变更"
+              echo ""
+              git log --pretty=format:'- %s (%h)' "${PREV_TAG}..HEAD"
+              echo ""
+            fi
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+
+          # tag 触发时 tag 已存在，要求校验；手动触发时由 gh 基于 main 创建
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            FLAGS+=(--verify-tag)
+          else
+            FLAGS+=(--target main)
+          fi
+
+          gh release create "$TAG" \
+            "dist/${{ steps.package.outputs.zip }}" \
+            "dist/${{ steps.package.outputs.dmg }}" \
+            "dist/SHA256SUMS.txt" \
+            --title "App Uninstaller $VERSION" \
+            --notes-file RELEASE_NOTES.md \
+            "${FLAGS[@]}"
+
+          echo "已发布: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
