@@ -18,7 +18,8 @@ concurrency:
 jobs:
   build-and-test:
     name: 构建与自测
-    runs-on: macos-14
+    # macOS 14 镜像已于 2026-11-02 退役，使用 macOS 15（Apple Silicon）
+    runs-on: macos-15
     timeout-minutes: 20
 
     steps:

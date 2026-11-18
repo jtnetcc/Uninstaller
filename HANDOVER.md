@@ -504,7 +504,7 @@ name: build-and-test
 on: [push, pull_request]
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Build
@@ -697,6 +697,7 @@ System Integrity Protection status: enabled.
 | 症状 | 根因 | 处理 |
 |---|---|---|
 | `sandbox-exec: sandbox_apply: Operation not permitted` | 终端受限，SwiftPM 自身沙盒不可用 | 加 `--disable-sandbox`（`build.sh` 已内置） |
+| CI 报 `The configuration 'macos-14-arm64-us-default' is not supported`，job 在 0s 被 cancelled、`runner_name` 为空 | GitHub 已退役该版本的托管 runner 镜像（macOS 14 于 2026-11-02 退役） | 把 `runs-on` 升到仍受支持的镜像（当前 `macos-15` / `macos-15-intel`），见 §8.7 |
 | `error: unable to find utility "swift-frontend"` | `xcode-select` 指向 CommandLineTools | `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` |
 | `cannot convert value of type '[AnyHashable : Bool]'`（改代码后） | `FileManager.enumerator(options:)` 传了字典 | 传 `[]` 或 `[.skipsHiddenFiles]` |
 | `'AuthorizationExecuteWithPrivileges' is unavailable` | 该 API 在 Swift 中已禁用 | 用现有的 `PrivilegedExecutor`（AppleScript 路径），勿再用该 API |
@@ -847,6 +848,7 @@ git commit -m "chore: initial import of App Uninstaller v1.0.0"
 
 | 检查项 | 方法 | 可能的变化 |
 |---|---|---|
+| CI runner 镜像 | 看 `.github/workflows/*.yml` 的 `runs-on`，对照 [actions/runner-images](https://github.com/actions/runner-images) 的支持列表 | GitHub 会定期退役旧镜像；退役后 job 在派发阶段即失败（`The configuration '<image>-<arch>-<region>-default' is not supported`），不会分配到 runner |
 | 卷结构 | `mount \| grep ' on / '` | 若 `/System` 变为可写，`systemVolume` 分支可真正删除 |
 | SIP 行为 | `csrutil status` | 影响提权后能否落盘 |
 | AppleScript 提权 | `osascript -e 'do shell script "id -u" with administrator privileges'` | 若 Apple 收紧，需迁移到 `SMAppService` + 特权 helper |
