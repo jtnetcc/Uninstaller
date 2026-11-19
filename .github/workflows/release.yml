@@ -121,7 +121,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          PREV_TAG="$(git describe --tags --abbrev=0 --exclude='*' HEAD^ 2>/dev/null || true)"
+          # 上一个 tag 用于生成变更列表（当前 tag 指向 HEAD，故从 HEAD^ 回溯）
+          PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
           {
             echo "## App Uninstaller $VERSION"
             echo ""
