@@ -102,9 +102,12 @@ swift build --disable-sandbox -c release
 
 # 追加管理员授权链路测试（会弹系统验证窗口，需输入登录密码）
 ./.build/release/AppUninstaller --selftest --privileged
+
+# 追加进程回收测试（启动真实进程树，验证 helper 子进程被一并终止；需要 cc）
+./.build/release/AppUninstaller --selftest --proctest
 ```
 
-- 基础模式 35 项断言；带 `--privileged` 共 43 项
+- 基础模式 35 项断言；`--proctest` 共 41 项（含真实进程树回收）；`--privileged` 共 43 项（含 root 提权删除）
 - 测试数据全部位于 `~/Applications` 与 `/Library/Application Support/AUPrivTest-*`，结束时自动清理
 - 退出码非 0 表示失败
 

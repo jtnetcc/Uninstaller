@@ -333,8 +333,12 @@ struct VerificationReport: Identifiable {
     let checkedAt: Date
     /// 是否因只读系统卷导致无法删除
     let blockedBySystemVolume: Bool
+    /// 仍属于该应用、尚在运行的进程（孤儿 helper / 被 launchd 拉起的守护进程）
+    var remainingProcesses: [ProcessSnapshot] = []
 
-    var isFullyCleared: Bool { !appStillExists && remaining.isEmpty }
+    var isFullyCleared: Bool {
+        !appStillExists && remaining.isEmpty && remainingProcesses.isEmpty
+    }
     var remainingSize: Int64 { remaining.reduce(0) { $0 + $1.sizeBytes } }
     var clearedCount: Int { clearedPaths.count }
 }

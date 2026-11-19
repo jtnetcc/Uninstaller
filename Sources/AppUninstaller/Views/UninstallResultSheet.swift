@@ -22,6 +22,7 @@ struct UninstallResultSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     statsRow
                     if stillBlocked { systemVolumeBlock }
+                    if let procs = report?.remainingProcesses, !procs.isEmpty { processBlock(procs) }
                     if !isFullyCleared { remainingBlock }
                     if !outcome.errors.isEmpty { errorBlock }
                 }
@@ -122,6 +123,67 @@ struct UninstallResultSheet: View {
         .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    // MARK: 残留进程
+
+    private func processBlock(_ processes: [ProcessSnapshot]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                Text("仍在运行的进程")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(processes.count) 个")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("应用已移除，但这些进程仍占用内存/磁盘")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(processes.enumerated()), id: \.element.id) { index, proc in
+                    if index > 0 { Divider().opacity(0.35) }
+                    HStack(spacing: 8) {
+                        Text("\(proc.pid)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 5) {
+                                Text(proc.displayName)
+                                    .font(.system(size: 11.5))
+                                if proc.isOrphan {
+                                    Text("孤儿")
+                                        .font(.system(size: 8.5, weight: .medium))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(Color.red.opacity(0.14), in: Capsule())
+                                        .foregroundStyle(.red)
+                                        .help("父进程已退出，由 launchd 收养")
+                                }
+                            }
+                            Text(proc.displayPath)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 6)
+                        Text(proc.matchedBy.label)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+        }
+    }
+
     // MARK: 残留列表
 
     private var remainingBlock: some View {
@@ -217,6 +279,23 @@ struct UninstallResultSheet: View {
             }
 
             Spacer()
+
+            if let procs = report?.remainingProcesses, !procs.isEmpty {
+                Button {
+                    Task { await model.killRemainingProcesses() }
+                } label: {
+                    HStack(spacing: 5) {
+                        if model.isUninstalling {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "xmark.octagon")
+                        }
+                        Text("结束进程")
+                    }
+                }
+                .disabled(model.isUninstalling)
+                .help("向残留进程发送 SIGTERM，超时后 SIGKILL")
+            }
 
             Button {
                 Task { await model.reverifyResult() }

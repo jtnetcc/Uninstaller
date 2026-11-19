@@ -292,6 +292,28 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// 结束仍属于该应用的残留进程（结果面板中的「结束进程」）
+    func killRemainingProcesses() async {
+        guard let payload = resultPayload,
+              let report = payload.outcome.verification,
+              !report.remainingProcesses.isEmpty else { return }
+
+        isUninstalling = true
+        let result = await ProcessReaper.terminate(report.remainingProcesses, log: logStore)
+        isUninstalling = false
+
+        var outcome = payload.outcome
+        if var updated = outcome.verification {
+            updated.remainingProcesses = result.survived
+            outcome.verification = updated
+        }
+        resultPayload = UninstallResultPayload(app: payload.app, outcome: outcome)
+
+        if !result.survived.isEmpty {
+            alertMessage = "有 \(result.survived.count) 个进程无法结束（可能属于其他用户或受系统保护）。"
+        }
+    }
+
     /// 重新检测（不执行删除）
     func reverifyResult() async {
         guard let payload = resultPayload else { return }

@@ -70,9 +70,9 @@ enum Uninstaller {
             return outcome
         }
 
-        // ---- 2. 退出运行中的实例 ----
+        // ---- 2. 退出运行中的实例（含 helper 子进程与 launchd 任务） ----
         if request.terminateRunningApp {
-            await terminateIfRunning(app: app, log: log)
+            await stopRunningProcesses(app: app, log: log)
         }
 
         // ---- 3. 移除应用本体 ----
@@ -259,11 +259,19 @@ enum Uninstaller {
             remaining: remaining,
             freedBytes: 0,
             checkedAt: Date(),
-            blockedBySystemVolume: appStillExists && app.path.hasPrefix("/System/")
+            blockedBySystemVolume: appStillExists && app.path.hasPrefix("/System/"),
+            remainingProcesses: ProcessReaper.processes(for: app)
         )
 
         log.append(.info, action: "重新检测完成", target: app.name,
-                   detail: "检查 \(checked.count) 项 · 已清除 \(cleared.count) 项 · 残留 \(remaining.count) 项")
+                   detail: "检查 \(checked.count) 项 · 已清除 \(cleared.count) 项 · 残留 \(remaining.count) 项 · 残留进程 \(report.remainingProcesses.count) 个")
+
+        if !report.remainingProcesses.isEmpty {
+            log.append(.warning, action: "检测到残留进程", target: app.name,
+                       detail: report.remainingProcesses
+                        .map { "\($0.displayName)(\($0.pid))\($0.isOrphan ? " 孤儿" : "")" }
+                        .joined(separator: ", "))
+        }
         return report
     }
 
@@ -282,37 +290,27 @@ enum Uninstaller {
         return access(parent, W_OK) != 0
     }
 
-    // MARK: 退出运行中的应用
+    // MARK: 终止运行中的进程
 
-    private static func terminateIfRunning(app: InstalledApp, log: LogStore) async {
-        guard let bid = app.bundleID else { return }
-        let running = await MainActor.run {
-            NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+    /// 卸载前停止该应用的全部进程：
+    /// 1. 先 `launchctl bootout` 卸载启动项 —— 否则 KeepAlive 任务会在 kill 后立刻重启
+    /// 2. 再按**可执行路径前缀**枚举进程，覆盖主进程与包内 helper（仅按 bundleID 会漏掉 helper）
+    /// 3. SIGTERM → 宽限 3 秒 → SIGKILL → 逐个校验
+    private static func stopRunningProcesses(app: InstalledApp, log: LogStore) async {
+        ProcessReaper.unloadLaunchdItems(for: app, log: log)
+
+        let processes = ProcessReaper.processes(for: app)
+        guard !processes.isEmpty else { return }
+
+        let helperCount = processes.filter { $0.path != "\(app.path)/Contents/MacOS/\(app.executableName ?? "")" }.count
+        log.append(.info, action: "检测到运行中的进程", target: app.name,
+                   detail: "共 \(processes.count) 个（其中 helper/子进程 \(helperCount) 个）")
+
+        let result = await ProcessReaper.terminate(processes, log: log)
+        if !result.survived.isEmpty {
+            log.append(.warning, action: "部分进程仍在运行", target: app.name,
+                       detail: result.survived.map { "\($0.displayName)(\($0.pid))" }.joined(separator: ", "))
         }
-        guard !running.isEmpty else { return }
-
-        log.append(.info, action: "请求退出应用", target: app.name,
-                   detail: "发现 \(running.count) 个运行中实例")
-
-        for instance in running {
-            _ = await MainActor.run { instance.terminate() }
-        }
-
-        for _ in 0..<30 {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            let alive = await MainActor.run { running.contains { !$0.isTerminated } }
-            if !alive { return }
-        }
-
-        for instance in running {
-            let stillAlive = await MainActor.run { !instance.isTerminated }
-            if stillAlive {
-                _ = await MainActor.run { instance.forceTerminate() }
-                log.append(.warning, action: "强制退出", target: app.name,
-                           detail: instance.localizedName ?? bid)
-            }
-        }
-        try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
     // MARK: 普通权限删除

@@ -148,6 +148,7 @@ AppUninstaller/
     │   ├── ProtectionPolicy.swift # 四档判定、SIP/只读卷探测、残留路径白名单
     │   ├── ResidualScanner.swift  # 16 类落点 + 厂商目录匹配 + 风险分级
     │   ├── Uninstaller.swift      # 主流程（阶段 A/B/C）、verify、undo
+    │   ├── ProcessReaper.swift    # 进程枚举/终止（含 helper 子进程）、launchd 启动项
     │   ├── PrivilegedExecutor.swift # AppleScript 提权批量删除 + SystemAppHider
     │   ├── LogStore.swift         # 线程安全日志（主线程更新 + 串行队列落盘）
     │   └── SelfTest.swift         # 无头自测（含 --privileged 提权测试）
@@ -173,6 +174,7 @@ AppUninstaller/
 | `Services/ProtectionPolicy.swift` | 216 | `evaluate(path:bundleID:name:)`、`isForbiddenResidualPath(_:)` | **高：安全边界** |
 | `Services/ResidualScanner.swift` | 147 | `scan(app:)`、`vendorPair(from:)`、`glob(_:)` | 高：误匹配会导致误删 |
 | `Services/Uninstaller.swift` | 406 | `perform(_:log:)`、`verify(app:residuals:log:)`、`undo(trashMap:log:)` | **高：主流程** |
+| `Services/ProcessReaper.swift` | 237 | `processes(for:)`、`terminate(_:log:)`、`unloadLaunchdItems(for:log:)` | **高：按路径杀进程，误匹配会误杀** |
 | `Services/PrivilegedExecutor.swift` | 184 | `removePaths(_:log:)`、`SystemAppHider.hide(_:)` | **高：root 执行 + 字符串拼接** |
 | `Services/LogStore.swift` | 93 | `append(_:action:target:detail:)` | 低 |
 | `Services/SelfTest.swift` | 272 | `run()` | 低（但新增功能应补断言） |
@@ -585,11 +587,11 @@ jobs:
 | 阶段 | 行为 | 失败处理 |
 |---|---|---|
 | 1 | 二次校验（forbidden / 自身 / 系统卷开关） | 直接返回并记录原因 |
-| 2 | 退出运行实例：`terminate()` → 3 秒轮询 → `forceTerminate()` | 记录「强制退出」警告，继续 |
+| 2 | 退出运行实例：先 `launchctl bootout` 停启动项 → 按**可执行路径前缀**枚举全部进程（含 helper）→ SIGTERM → 3 秒 → SIGKILL → 逐个校验 | 仍存活的记入 `remainingProcesses`，继续卸载 |
 | 3 | 移除本体：`userManaged` 走 `NSWorkspace.recycle`（可撤销）或 `removeItem` | 权限类错误 → 标记待提权；其他错误 → 终止并复检 |
 | 4 | 系统卷特判：先单独提权删本体 | 失败则**中止**，不清理残留（避免"应用还在、配置没了"） |
 | 5 | 残留：普通项就地处理；`requiresAdmin` 或权限失败项**收集后一次授权批量删除** | 用户取消 → 标记 `authorizationCancelled`，已完成的普通删除不回滚 |
-| 6 | `verify()` 重新 stat 所有路径 | 结果进 `UninstallResultSheet` |
+| 6 | `verify()` 重新 stat 所有路径 **+ 重新枚举残留进程** | 结果进 `UninstallResultSheet`（含「结束进程」入口） |
 
 **约定**：一次卸载最多弹 **一次** 密码框（阶段 3/5 的 root 操作合并）；root 删除不进废纸篓、不可撤销，确认面板必须提前告知。
 
@@ -684,6 +686,7 @@ System Integrity Protection status: enabled.
 | 复检 | `isFullyCleared`、0 残留、计数一致 |
 | 撤销 | 恢复 5 项、复检转为"仍存在" |
 | 系统卷 | 对 `Music.app` 复检应报 `blockedBySystemVolume` |
+| 进程（`--proctest`） | 启动「主进程 + 包内 helper」真实进程树 → 断言发现 ≥2 个 → 卸载后断言 0 个残留 |
 | 提权（`--privileged`） | 身份探测为 root、创建 `/Library/Application Support/AUPrivTest-*`、提权删除返回 `OK`、复检消失 |
 
 测试数据在结束时全部清理，不会残留真实系统文件。
@@ -724,6 +727,7 @@ System Integrity Protection status: enabled.
 | 授权后仍失败（`Operation not permitted`） | 目标是 SIP 保护路径 | 属 `forbidden`/`systemVolume` 范畴，按其提示处理（隐藏 or 放弃） |
 | 卸载按钮灰色 | `removalScope == .forbidden` | 查看详情页橙色横幅中的具体原因 |
 | 系统内置应用提示「无法物理删除」 | 只读签名卷，非权限问题 | 用「隐藏」，见 §6.9 |
+| 卸载完成但「后台还有进程」，内存/磁盘没释放 | 旧实现只按 bundleID 终止主进程，包内 helper（Electron/Chromium/XPC）bundleID 不同，杀不到，会变成孤儿进程；进程持有已删文件的 inode，空间也不回收 | 已由 `ProcessReaper` 按**可执行路径前缀**覆盖；结果面板会列出残留进程并提供「结束进程」。手工核对见 §7.6 |
 | 残留有 `Group Containers` 未被清理 | 默认 `risky` 未勾选 | 手动在确认面板勾选（可能影响其他 App，谨慎） |
 | 撤销无效 | 该路径是 root 删除，未进废纸篓 | 设计如此；root 删除不可撤销 |
 | 删除后应用仍出现在启动台 | LaunchServices 缓存 | 执行一次「隐藏」或重启 Finder；也可 `killall Dock` |
@@ -764,6 +768,33 @@ ls -lde "/Applications/Some.app" "/Applications/Some.app/Contents"
 | 崩溃堆栈 | `~/Library/Logs/DiagnosticReports/AppUninstaller-*.ips` |
 | 系统拒绝原因 | 打开「控制台」搜 `AppUninstaller` 或 `tccd` |
 
+### 7.6 手工核对残留进程
+
+怀疑「卸载完还有东西在跑」时，按下面三步确认：
+
+```bash
+APP="/Applications/Some.app"
+
+# 1) 按应用包路径列出仍在运行的进程（含 helper / 子进程）
+pgrep -fl "$APP"
+
+# 2) 看父进程：PPID=1 说明原父进程已退出，是典型残留
+ps -o pid,ppid,stat,command -p "$(pgrep -f "$APP" | head -1)"
+
+# 3) 看是否持有已删除文件（磁盘空间不释放的根因）
+lsof +L1 | grep -i "Some"
+```
+
+判断标准：
+
+| 现象 | 含义 |
+|---|---|
+| 命令行含 `.app/Contents/` | 包内进程，卸载时必须终止 |
+| `PPID=1` | 孤儿进程，父进程已死，仍在运行 |
+| `lsof` 显示 `deleted` 或 `.Trash/` 路径 | 进程仍持有 inode，空间要等进程退出才归还 |
+
+对应的自动化验证：`./.build/release/AppUninstaller --selftest --proctest`
+
 ---
 
 ## 8. 后续维护注意事项
@@ -775,6 +806,7 @@ ls -lde "/Applications/Some.app" "/Applications/Some.app/Contents"
 3. **不得把残留白名单用在应用本体上**（历史上踩过：`~/Applications/*.app` 被误判为受保护，导致卸载全失败）。
 4. **不得让 root 删除伪装成"可撤销"**。root 删除不进废纸篓，UI 必须如实告知。
 5. **不得声称能删除 SSV 上的系统应用**。只能尝试 + 失败说明 + 隐藏。
+6. **不得用 bundleID 作为终止进程的唯一依据**。helper 的 bundleID 与主应用不同，只按 bundleID 会留下孤儿进程；必须按可执行路径前缀匹配（`ProcessReaper`），且排除自身 PID 与系统 PID。
 
 ### 8.2 改动前检查清单
 

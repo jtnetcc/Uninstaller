@@ -172,7 +172,14 @@ enum SelfTest {
             print("  · 跳过管理员授权测试（加 --privileged 可执行）")
         }
 
-        // ---------- 9. 清理 ----------
+        // ---------- 9. 进程回收（仅 --proctest：会启动真实进程树） ----------
+        if CommandLine.arguments.contains("--proctest") {
+            await runProcessTest(home: home, log: log)
+        } else {
+            print("  · 跳过进程回收测试（加 --proctest 可执行，需要 cc）")
+        }
+
+        // ---------- 10. 清理 ----------
         try? fm.removeItem(at: testApp)
         for path in residualPaths { try? fm.removeItem(atPath: path) }
         try? fm.removeItem(at: home.appendingPathComponent("Library/Application Support/auselftest"))
@@ -183,6 +190,141 @@ enum SelfTest {
     }
 
     // MARK: 辅助
+
+    // MARK: 进程回收测试
+
+    /// 端到端验证：启动一个「主进程 + 包内 helper」的真实进程树，
+    /// 走完整卸载流程，确认 helper 也被终止（旧实现只按 bundleID 杀主进程，helper 会残留）。
+    private static func runProcessTest(home: URL, log: LogStore) async {
+        print("--- 进程回收测试（启动真实进程树）---")
+        let fm = FileManager.default
+        let appsDir = home.appendingPathComponent("Applications", isDirectory: true)
+        let app = appsDir.appendingPathComponent("AU ProcTest.app", isDirectory: true)
+        try? fm.removeItem(at: app)
+
+        do {
+            try buildProcessTestApp(at: app)
+        } catch {
+            check(false, "构造进程测试应用失败: \(error.localizedDescription)")
+            return
+        }
+
+        let opened = NSWorkspace.shared.open(app)
+        check(opened, "应用已通过 LaunchServices 启动")
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+
+        guard let scanned = AppScanner.makeApp(url: app, size: AppScanner.directorySize(app)) else {
+            check(false, "进程测试应用元数据解析失败")
+            return
+        }
+
+        let before = ProcessReaper.processes(for: scanned)
+        check(before.count >= 2, "应发现主进程与 helper 共 ≥2 个（实际 \(before.count) 个）")
+        check(before.contains { $0.matchedBy == .bundlePath }, "匹配依据应为包内路径")
+        if !before.isEmpty {
+            print("  · 卸载前: " + before.map { "\($0.displayName)(\($0.pid))" }.joined(separator: ", "))
+        }
+
+        let request = UninstallRequest(
+            app: scanned,
+            residuals: [],
+            useTrash: false,
+            terminateRunningApp: true,
+            allowSystemApps: false,
+            allowPrivilegedRemoval: false
+        )
+        let outcome = await Uninstaller.perform(request, log: log)
+
+        let after = ProcessReaper.processes(for: scanned)
+        check(after.isEmpty, "卸载后不应残留任何进程（实际 \(after.count) 个）")
+        check(outcome.verification?.remainingProcesses.isEmpty ?? false, "复检报告不应包含残留进程")
+        check(!fm.fileExists(atPath: app.path), "应用包已删除")
+
+        if !after.isEmpty {
+            print("  · 残留: " + after.map { "\($0.displayName)(\($0.pid))" }.joined(separator: ", "))
+            for proc in after { kill(proc.pid, SIGKILL) }
+        }
+        try? fm.removeItem(at: app)
+    }
+
+    private static func buildProcessTestApp(at url: URL) throws {
+        let fm = FileManager.default
+        let macos = url.appendingPathComponent("Contents/MacOS")
+        let helpers = url.appendingPathComponent("Contents/Helpers")
+        try fm.createDirectory(at: macos, withIntermediateDirectories: true)
+        try fm.createDirectory(at: helpers, withIntermediateDirectories: true)
+
+        let tmp = fm.temporaryDirectory.appendingPathComponent("au-proctest-\(UUID().uuidString)")
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmp) }
+
+        let mainSrc = tmp.appendingPathComponent("main.c")
+        let helperSrc = tmp.appendingPathComponent("helper.c")
+        try mainCSource.write(to: mainSrc, atomically: true, encoding: .utf8)
+        try helperCSource.write(to: helperSrc, atomically: true, encoding: .utf8)
+
+        try compile(mainSrc, to: macos.appendingPathComponent("AUProcTest"))
+        try compile(helperSrc, to: helpers.appendingPathComponent("AUProcHelper"))
+
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "com.jt.proctest",
+            "CFBundleName": "AU ProcTest",
+            "CFBundleExecutable": "AUProcTest",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "1.0",
+            "CFBundleVersion": "1",
+            "LSMinimumSystemVersion": "13.0",
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try data.write(to: url.appendingPathComponent("Contents/Info.plist"))
+
+        // ad-hoc 签名，避免 Gatekeeper 拦截
+        let sign = Process()
+        sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        sign.arguments = ["--force", "--sign", "-", url.path]
+        sign.standardError = Pipe()
+        try? sign.run()
+        sign.waitUntilExit()
+    }
+
+    private static func compile(_ source: URL, to destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+        process.arguments = ["-O2", "-o", destination.path, source.path]
+        let pipe = Pipe()
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let err = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw NSError(domain: "SelfTest", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "cc 编译失败: \(err.prefix(300))"])
+        }
+    }
+
+    private static let helperCSource = """
+    #include <unistd.h>
+    int main(void) { for (;;) pause(); return 0; }
+    """
+
+    private static let mainCSource = """
+    #include <unistd.h>
+    #include <stdio.h>
+    #include <string.h>
+    #include <libgen.h>
+
+    int main(int argc, char **argv) {
+        char path[4096];
+        char *dir = strdup(argv[0]);
+        snprintf(path, sizeof(path), "%s/../Helpers/AUProcHelper", dirname(dir));
+        if (fork() == 0) {
+            execl(path, "AUProcHelper", (char *)0);
+            _exit(1);
+        }
+        for (;;) pause();
+        return 0;
+    }
+    """
 
     /// 以 root 执行命令（用于构造需要提权才能删除的测试数据）
     private static func runAsRoot(_ command: String) -> (ok: Bool, output: String) {
